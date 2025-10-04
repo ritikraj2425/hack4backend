@@ -7,5 +7,8 @@ const authController = require('../controller/auth.controller');
 router.get('/github/callback', authController.githubCallback);
 router.get('/check', authController.checkAuth);
 router.get('/logout', authController.logout);
+router.get('/debug', authController.debugAuth);
+router.get('/user', authController.getCurrentUser);
+
 
 module.exports = router;
