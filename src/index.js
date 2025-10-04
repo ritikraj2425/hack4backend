@@ -4,6 +4,8 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const morgan = require("morgan");
 const authRoutes = require("./routes/auth.routes");
+const userRoutes = require('./routes/user.routes');
+
 
 const app = express();
 
@@ -21,6 +23,7 @@ app.use(cookieParser());
 
 // Routes
 app.use("/auth", authRoutes);
+app.use('/auth', userRoutes);
 
 // Test route
 app.get("/", (req, res) => res.send("Server is running!"));
