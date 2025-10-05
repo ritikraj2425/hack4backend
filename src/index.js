@@ -5,6 +5,9 @@ const cookieParser = require("cookie-parser");
 const morgan = require("morgan");
 const authRoutes = require("./routes/auth.routes");
 const postRoutes = require("./routes/post.routes");
+const achievementRoutes = require("./routes/achievements.routes")
+const agentRoutes = require("./routes/agent.routes");
+
 const app = express();
 
 const corsOptions = {
@@ -18,8 +21,8 @@ app.use(cors(corsOptions));
 app.use(morgan("dev"));
 app.use(express.json());
 app.use(cookieParser());
-
-// Routes
+app.use("/api/agent", agentRoutes);
+app.use("/api/achievement", achievementRoutes)
 app.use("/auth", authRoutes);
 app.use('/api/posts', postRoutes);
 
