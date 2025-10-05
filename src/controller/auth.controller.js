@@ -1,33 +1,18 @@
+// controllers/authController.js
 require("dotenv").config();
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
 const Users = require("../models/user.model");
 
 // -------------------- GITHUB OAUTH CALLBACK --------------------
-exports.githubCallback = async (req, res) => {
+const githubCallback = async (req, res) => {
     try {
         console.log("🔵 GitHub OAuth callback started");
-        console.log("Query params:", req.query);
-        
         const { code } = req.query;
+        
         if (!code) {
             console.error("❌ Missing GitHub code");
             return res.status(400).json({ message: "Missing GitHub code." });
-        }
-
-        // Debug environment variables
-        console.log("🔍 Environment check:", {
-            hasClientId: !!process.env.GITHUB_CLIENT_ID,
-            hasClientSecret: !!process.env.GITHUB_CLIENT_SECRET,
-            redirectUri: process.env.GITHUB_REDIRECT_URI,
-            frontendUrl: process.env.FRONTEND_URL
-        });
-
-        if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) {
-            console.error("❌ Missing GitHub OAuth credentials");
-            return res.status(500).json({ 
-                message: "Server configuration error: Missing OAuth credentials" 
-            });
         }
 
         // Exchange code for access token
@@ -47,8 +32,6 @@ exports.githubCallback = async (req, res) => {
                 } 
             }
         );
-
-        console.log("✅ Token response:", tokenResponse.data);
 
         const accessToken = tokenResponse.data.access_token;
         if (!accessToken) {
@@ -121,11 +104,6 @@ exports.githubCallback = async (req, res) => {
             username: user.username 
         };
 
-        if (!process.env.JWT_SECRET) {
-            console.error("❌ JWT_SECRET not found");
-            return res.status(500).json({ message: "Server configuration error." });
-        }
-
         const jwtToken = jwt.sign(payload, process.env.JWT_SECRET, { 
             expiresIn: '3d' 
         });
@@ -144,20 +122,14 @@ exports.githubCallback = async (req, res) => {
         res.redirect(frontendURL);
 
     } catch (error) {
-        console.error("💥 GitHub callback error:", {
-            message: error.message,
-            response: error.response?.data,
-            stack: error.stack
-        });
-        
-        // Redirect to frontend with error
+        console.error("💥 GitHub callback error:", error.message);
         const frontendURL = process.env.FRONTEND_URL || "http://localhost:3000";
         res.redirect(`${frontendURL}?error=auth_failed`);
     }
 };
 
 // -------------------- CHECK AUTH --------------------
-exports.checkAuth = async (req, res) => {
+const checkAuth = async (req, res) => {
     try {
         const token = req.cookies?.authToken;
         if (!token) {
@@ -187,26 +159,86 @@ exports.checkAuth = async (req, res) => {
     }
 };
 
-// In your backend authController.js - update the getCurrentUser function
-exports.getCurrentUser = async (req, res) => {
+// -------------------- GET CURRENT USER --------------------
+const getCurrentUser = async (req, res) => {
     try {
         console.log('🔍 getCurrentUser - Cookies:', req.cookies);
         
         const token = req.cookies?.authToken;
         if (!token) {
-            console.log('❌ No authToken cookie found');
             return res.status(401).json({ 
                 success: false,
                 message: "Not authenticated" 
             });
         }
 
-        console.log('✅ authToken found, verifying...');
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        console.log('✅ Token decoded:', decoded);
+        const user = await Users.findById(decoded.id).select('-password -githubToken -__v');
         
-        const user = await Users.findById(decoded.id)
-            .select('-password -githubToken -__v');
+        if (!user) {
+            return res.status(404).json({ 
+                success: false,
+                message: "User not found" 
+            });
+        }
+
+        console.log('✅ User found:', user.email);
+        
+        // Return user data
+        const userResponse = {
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            username: user.username,
+            avatar: user.avatar,
+            isVerified: user.isVerified,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
+        };
+
+        // Only include existing stats and PRs (don't fetch new ones)
+        if (user.stats) {
+            userResponse.stats = user.stats;
+        }
+        if (user.prs) {
+            userResponse.prs = user.prs;
+        }
+
+        res.status(200).json({
+            success: true,
+            user: userResponse
+        });
+
+    } catch (error) {
+        console.error("💥 getCurrentUser error:", error.message);
+        res.status(500).json({ 
+            success: false,
+            message: "Server error while fetching user data",
+            error: error.message 
+        });
+    }
+};
+
+// -------------------- GET USER PRs --------------------
+const getUserPRs = async (req, res) => {
+    try {
+        console.log('🔍 getUserPRs - Starting...');
+        console.log('🔍 Cookies:', req.cookies);
+        
+        const token = req.cookies?.authToken;
+        if (!token) {
+            console.log('❌ No auth token found');
+            return res.status(401).json({ 
+                success: false,
+                message: "Not authenticated" 
+            });
+        }
+
+        console.log('✅ Token found, verifying...');
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        console.log('✅ Token decoded for user:', decoded.email);
+        
+        const user = await Users.findById(decoded.id);
         
         if (!user) {
             console.log('❌ User not found in database');
@@ -216,48 +248,100 @@ exports.getCurrentUser = async (req, res) => {
             });
         }
 
-        console.log('✅ User found:', user.email);
-        
+        if (!user.githubToken) {
+            console.log('❌ User has no GitHub token');
+            return res.status(404).json({ 
+                success: false,
+                message: "GitHub token not found. Please reconnect GitHub." 
+            });
+        }
+
+        console.log(`📡 Fetching merged PRs for user: ${user.username}`);
+
+        const githubToken = user.githubToken;
+        const searchQuery = `is:pr author:${user.username} is:merged`;
+
+        const searchRes = await axios.get(
+            `https://api.github.com/search/issues?q=${encodeURIComponent(searchQuery)}&per_page=50`,
+            { headers: { Authorization: `Bearer ${githubToken}`, "User-Agent": "MergeFlow-App" } }
+        );
+
+        const prs = searchRes.data.items || [];
+        console.log(`🔍 Found ${prs.length} merged PRs`);
+
+        const filteredPRs = [];
+        let high = 0, medium = 0, low = 0;
+
+        for (const pr of prs) {
+            try {
+                const repoUrl = pr.repository_url;
+                const repoRes = await axios.get(repoUrl, {
+                    headers: { Authorization: `Bearer ${githubToken}`, "User-Agent": "MergeFlow-App" }
+                });
+
+                const repo = repoRes.data;
+
+                // Skip private repos or self-owned repos
+                if (repo.private || repo.owner.login === user.username) continue;
+
+                // Categorize impact
+                let impact = "low";
+                if (repo.stargazers_count > 500) {
+                    impact = "high";
+                    high++;
+                } else if (repo.stargazers_count >= 100) {
+                    impact = "medium";
+                    medium++;
+                } else {
+                    low++;
+                }
+
+                filteredPRs.push({
+                    title: pr.title,
+                    url: pr.html_url,
+                    repo: repo.full_name,
+                    stars: repo.stargazers_count,
+                    impact,
+                    mergedAt: pr.closed_at,
+                });
+            } catch (repoErr) {
+                console.log("⚠️ Repo fetch failed:", repoErr.message);
+            }
+        }
+
+        // Save stats and PRs to user
+        user.stats = {
+            highImpactPRs: high,
+            mediumImpactPRs: medium,
+            lowImpactPRs: low,
+            totalMergedPRs: high + medium + low,
+            lastUpdated: new Date()
+        };
+        user.prs = filteredPRs;
+
+        await user.save();
+
+        console.log('✅ PR data saved successfully');
+
         res.status(200).json({
             success: true,
-            user: {
-                id: user._id,
-                name: user.name,
-                email: user.email,
-                username: user.username,
-                avatar: user.avatar,
-                isVerified: user.isVerified,
-                createdAt: user.createdAt,
-                updatedAt: user.updatedAt
-            }
+            stats: user.stats,
+            prs: user.prs,
+            message: `Found ${filteredPRs.length} merged PRs`
         });
 
     } catch (error) {
-        console.error("💥 getCurrentUser error:", error.message);
-        
-        if (error.name === 'JsonWebTokenError') {
-            return res.status(401).json({ 
-                success: false,
-                message: "Invalid token" 
-            });
-        }
-        
-        if (error.name === 'TokenExpiredError') {
-            return res.status(401).json({ 
-                success: false,
-                message: "Token expired" 
-            });
-        }
-
+        console.error("💥 getUserPRs error:", error.message);
         res.status(500).json({ 
             success: false,
-            message: "Server error while fetching user data",
+            message: "Failed to fetch PR data",
             error: error.message 
         });
     }
 };
+
 // -------------------- LOGOUT --------------------
-exports.logout = async (req, res) => {
+const logout = async (req, res) => {
     res.clearCookie('authToken', {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -267,26 +351,82 @@ exports.logout = async (req, res) => {
 };
 
 
-// In your backend authController.js - add this temporary debug route
-exports.debugAuth = async (req, res) => {
-    console.log('🔍 Debug - Cookies:', req.cookies);
-    console.log('🔍 Debug - Headers:', req.headers);
-    
-    const token = req.cookies?.authToken;
-    console.log('🔍 Debug - Token exists:', !!token);
-    
-    if (token) {
-        try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            console.log('🔍 Debug - Token decoded:', decoded);
-        } catch (error) {
-            console.log('🔍 Debug - Token invalid:', error.message);
-        }
+// controllers/authController.js
+
+// -------------------- GET ALL USERS FOR LEADERBOARD --------------------
+const getAllUsers = async (req, res) => {
+    try {
+        console.log('🔍 Fetching all users for leaderboard...');
+        
+        // Get all users with their PR stats, exclude sensitive information
+        const users = await Users.find()
+            .select('-password -githubToken -email -__v')
+            .sort({ 'stats.totalMergedPRs': -1, 'stats.highImpactPRs': -1 });
+
+        console.log(`✅ Found ${users.length} users for leaderboard`);
+
+        // Calculate scores and prepare leaderboard data
+        const leaderboardData = users.map((user, index) => {
+            const stats = user.stats || {
+                highImpactPRs: 0,
+                mediumImpactPRs: 0,
+                lowImpactPRs: 0,
+                totalMergedPRs: 0
+            };
+
+            // Calculate score: High impact = 10, Medium = 5, Low = 2
+            const score = (stats.highImpactPRs * 10) + 
+                         (stats.mediumImpactPRs * 5) + 
+                         (stats.lowImpactPRs * 2);
+
+            return {
+                id: user._id,
+                name: user.name,
+                username: user.username,
+                avatar: user.avatar,
+                score: score,
+                prsCount: stats.totalMergedPRs,
+                highImpactPRs: stats.highImpactPRs,
+                mediumImpactPRs: stats.mediumImpactPRs,
+                lowImpactPRs: stats.lowImpactPRs,
+                rank: index + 1,
+                isVerified: user.isVerified,
+                lastUpdated: user.stats?.lastUpdated || user.updatedAt
+            };
+        });
+
+        // Sort by score (descending) in case the database sort wasn't enough
+        leaderboardData.sort((a, b) => b.score - a.score);
+        
+        // Update ranks after sorting
+        leaderboardData.forEach((user, index) => {
+            user.rank = index + 1;
+        });
+
+        console.log('✅ Leaderboard data prepared successfully');
+
+        res.status(200).json({
+            success: true,
+            users: leaderboardData,
+            total: leaderboardData.length,
+            lastUpdated: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('💥 Error fetching all users:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch leaderboard data',
+            error: error.message
+        });
     }
-    
-    res.json({
-        hasCookie: !!token,
-        cookies: req.cookies,
-        headers: req.headers
-    });
+};
+// Export all functions
+module.exports = {
+    githubCallback,
+    checkAuth,
+    getCurrentUser,
+    getUserPRs,
+    logout,
+    getAllUsers
 };
