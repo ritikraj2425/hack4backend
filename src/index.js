@@ -7,6 +7,7 @@ const authRoutes = require("./routes/auth.routes");
 const postRoutes = require("./routes/post.routes");
 const achievementRoutes = require("./routes/achievements.routes")
 const agentRoutes = require("./routes/agent.routes");
+const userRoutes = require('./routes/user.routes');
 
 const app = express();
 
@@ -25,6 +26,7 @@ app.use("/api/agent", agentRoutes);
 app.use("/api/achievement", achievementRoutes)
 app.use("/auth", authRoutes);
 app.use('/api/posts', postRoutes);
+app.use('/api/users', userRoutes);
 
 
 // Test route
